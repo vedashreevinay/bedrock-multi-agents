@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  vacation-planner
+
+  Sample SAM Template for vacation-planner
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 20
+    MemorySize: 128
+
+    Tracing: Active
+    # You can add LoggingConfig parameters such as the Logformat, Log Group, and SystemLogLevel or ApplicationLogLevel. Learn more here https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-loggingconfig.
+    LoggingConfig:
+      LogFormat: JSON
+  Api:
+    TracingEnabled: true
+Resources:
+  ###
+  LambdaPermissionForPlannerAgent:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt plannerAgentAGFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+  LambdaPermissionForHotelAgent:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt HotelAgentAGFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+  LambdaPermissionForWeatherlAgent:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt WeatherAgentAGFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+  HotelAgentAGFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: hotel-agent/
+      Handler: app.lambda_handler
+      Runtime: python3.10
+      Architectures:
+      - x86_64
+  WeatherAgentAGFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: weather-agent/
+      Handler: app.lambda_handler
+      Runtime: python3.10
+      Architectures:
+      - x86_64
+  
+ 
+  AmazonBedrockExecutionRoleForAgents:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - bedrock.amazonaws.com
+      Policies:
+        - PolicyName: AmazonBedrockAgentBedrockFoundationModelPolicyProd
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AmazonBedrockAgentBedrockFoundationModelPolicyProd
+                Effect: Allow
+                Action: 
+                  - bedrock:InvokeModel
+                Resource: 
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0
+      Description: Allows the Bedrock agent to call the agent API
+      RoleName: !Join 
+            - '-'
+            - - 'AmazonBedrockExecutionRoleForAgents'
+              - !Ref 'AWS::StackName'
+
+  WeatherAgent:
+     Type: AWS::Bedrock::Agent
+     Properties:
+      AgentName: !Join 
+            - '-'
+            - - 'WeatherAgent'
+              - !Ref 'AWS::StackName'
+      Description: Agent for getting weather information for a city
+      AgentResourceRoleArn: !GetAtt AmazonBedrockExecutionRoleForAgents.Arn
+      Instruction: You are a helpful weather agent that can provide opinions on a city's weather after you look at its weather details. 
+      AutoPrepare: True
+      FoundationModel: anthropic.claude-3-haiku-20240307-v1:0
+      ActionGroups: 
+        - ActionGroupName: WeatherAgentAG 
+          ActionGroupExecutor: 
+            Lambda: !GetAtt WeatherAgentAGFunction.Arn
+          FunctionSchema:
+            Functions: 
+              - Name: askForWeather
+                Description: 
+                    returns details about a city's weather like min and max temperature, rainfall %
+                Parameters: 
+                    city: 
+                        Description: The name of the city for which to retrieve weather information
+                        Type: string
+                        Required: True     
+      
+  HotelAgent:
+     Type: AWS::Bedrock::Agent
+     Properties:
+      AgentName: !Join 
+            - '-'
+            - - 'HotelAgent'
+              - !Ref 'AWS::StackName'
+      AgentResourceRoleArn: !GetAtt AmazonBedrockExecutionRoleForAgents.Arn
+      Description: Agent for getting information about hotels in a city
+      Instruction: You are a helpful hotel agent that can get a list of hotels in a specific city or zipcode and help reserve hotel 
+      AutoPrepare: True
+      FoundationModel: anthropic.claude-3-haiku-20240307-v1:0
+      ActionGroups: 
+        - ActionGroupName: HotelAgentAG 
+          ActionGroupExecutor: 
+            Lambda: !GetAtt HotelAgentAGFunction.Arn
+          FunctionSchema:
+            Functions: 
+              - Name: getHotels
+                Description: 
+                    returns a list of hotels in a city or zipcode, along with their details like name, address, and contact information for reservations
+                Parameters: 
+                    city: 
+                        Description: The name of the city for which to retrieve hotels' information
+                        Type: string
+                        Required: True
+              - Name: reserveHotel
+                Description: 
+                    reserves a hotel for a specific date and time, and returns a confirmation of the reservation
+                Parameters: 
+                    hotelname: 
+                        Description: The name of the hotel to reserve
+                        Type: string
+                        Required: True
+              
+
+  plannerAgentAGFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: planner-agent/
+      Handler: app.lambda_handler
+      Runtime: python3.10
+      Architectures:
+      - x86_64
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: 
+                - "bedrock:GetFoundationModelAvailability"
+                - "bedrock:GetModelInvocationLoggingConfiguration"
+                - "bedrock:PutModelInvocationLoggingConfiguration"
+                - "bedrock:ListFoundationModels"
+                - "bedrock:CreateFoundationModelAgreement"
+                - "bedrock:InvokeModel"
+                - "bedrock:ListAgentAssets"
+                - "bedrock:GetAgent"
+                - "bedrock:ListAgents"
+                - "bedrock:DescribeAgentRuntime"
+                - "bedrock:GetAgentRuntime"
+                - "bedrock:InvokeAgent"
+              Resource: "*"
+      Layers:
+        - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:latest-boto3:1' #Todo replace with your own boto3 layer
+      Environment:
+        Variables:
+          WEATHER_AGENT_ID: !Ref WeatherAgent
+          HOTEL_AGENT_ID: !Ref HotelAgent
+
+  VacationPlannerAgent:
+     Type: AWS::Bedrock::Agent
+     Properties:
+      AgentName: !Join 
+            - '-'
+            - - 'VacationPlannerAgent'
+              - !Ref 'AWS::StackName'
+      AgentResourceRoleArn: !GetAtt AmazonBedrockExecutionRoleForAgents.Arn
+      Description: Agent that can help plan vacation and call the weather and hotel agents when needed for help.
+      Instruction: You are a helpful vacation planner agent that can help users plan their vacations. You have a weather agent and a hotel agent that can help you. Weather agent can get the weather information for the destination(s) and hotel agent can help get you a list of hotels in the destination and also optionally help you reserve the hotel of user's choice. When asked you will provide a detailed itinerary for the vacation including the hotels information for each day if applicable. Do not assume that user wants to reserve a hotel. When you want to reserve a hotel-check with the user and get permission to reserve.    
+      AutoPrepare: True
+      FoundationModel: anthropic.claude-3-haiku-20240307-v1:0
+      ActionGroups: 
+        - ActionGroupName: VacationPlannerAgentAG 
+          ActionGroupExecutor: 
+            Lambda: !GetAtt plannerAgentAGFunction.Arn
+          FunctionSchema:
+            Functions: 
+              - Name: askForWeather
+                Description: 
+                    returns details about a city's weather like min and max temperature, rainfall %
+                Parameters: 
+                    prompt: 
+                        Description: The prompt to be sent to the weather agent for getting weather information
+                        Type: string
+                        Required: True
+              - Name: listHotels
+                Description: 
+                    returns details about a city's hotels along with their details
+                Parameters: 
+                    prompt: 
+                        Description: The prompt to be sent to the hotel agent for getting hotel information
+                        Type: string
+                        Required: True
+              - Name: reserveHotel
+                Description: 
+                    reserves the hotel of user's choice for the given time 
+                Parameters: 
+                    prompt: 
+                        Description: The prompt to be sent to the hotel agent for reserving a hotel
+                        Type: string
+                        Required: True
+                
+          
+     
+  
